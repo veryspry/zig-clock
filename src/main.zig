@@ -8,7 +8,6 @@ pub fn main() !void {
     var stdout_writer = stdout_file.writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-
     overrideSignals();
 
    	try displayAltBuffer(stdout);
@@ -25,20 +24,24 @@ pub fn main() !void {
     while (!should_exit.load(.seq_cst)) {
     	const winsize = try getWinSize(&stdout_file);
 
-     	if ( last_winsize == null or last_winsize.?.row != winsize.row or last_winsize.?.col != winsize.col ) {
-      		var message_buffer: [1024]u8 = undefined;
-            const message = try std.fmt.bufPrint(&message_buffer, "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
+   		var message_buffer: [1024]u8 = undefined;
 
-            // try clearPrompt(stdout);
-            try printCentered(stdout, message, winsize);
+   		const time = getCurrentTime();
+     	const time_msg = try std.fmt.bufPrint(&message_buffer, "{d}:{d}:{d}", .{ time.hours, time.minutes, time.seconds });
+       	try printCentered(stdout, time_msg, winsize);
+
+     	if (last_winsize == null or last_winsize.?.row != winsize.row or last_winsize.?.col != winsize.col) {
+    		try clearPrompt(stdout);
+
+      		// var message_buffer: [1024]u8 = undefined;
+            const size_msg = try std.fmt.bufPrint(&message_buffer, "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
+
+            try printBottomLeft(stdout, size_msg, winsize);
 
             last_winsize = winsize;
       	}
 
-       	std.Thread.sleep(1_000_000_000);
-        // try displayMainBuffer(stdout);
-        // std.Thread.sleep(1_000_000_000);
-        // try displayAltBuffer(stdout);
+       	std.Thread.sleep(10_000_000);
     }
 }
 
@@ -128,4 +131,35 @@ fn printCentered(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsi
 
 	try w.print("\x1B[{d};{d}H{s}", .{ center_row, center_col, buffer });
     try w.flush();
+}
+
+fn printBottomLeft(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsize) !void {
+	const bottom_row = winsize.row;
+	const left_col = 1;
+	try w.print("\x1B[{d};{d}H{s}", .{ bottom_row, left_col, buffer });
+    try w.flush();
+}
+
+const Time = struct {
+	seconds: u6,
+	minutes: u6,
+	hours: u5,
+};
+
+fn getCurrentTime() Time {
+	const timestamp = std.time.timestamp();
+	const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(timestamp) };
+	const day_seconds = epoch_seconds.getDaySeconds();
+
+	const seconds = day_seconds.getSecondsIntoMinute();
+	const minutes = day_seconds.getMinutesIntoHour();
+ 	const hours = day_seconds.getHoursIntoDay();
+
+	const time: Time = .{
+		.seconds = seconds,
+		.minutes = minutes,
+		.hours = hours,
+	};
+
+	return time;
 }
