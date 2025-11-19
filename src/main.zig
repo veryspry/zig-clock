@@ -12,18 +12,30 @@ pub fn main() !void {
 
    	try displayAltBuffer(stdout);
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    var last_winsize: ?std.posix.winsize = undefined;
 
     while (true) {
      	const winsize = try getWinSize(&stdout_file);
 
-        try clearPrompt(stdout);
-        const text = try std.fmt.allocPrint(allocator, "Rows: {}, Cols: {}\n", .{ winsize.row, winsize.col });
-        try printCentered(stdout, text, winsize);
-        defer allocator.free(text);  // Don't forget to free
+      if (
+      	last_winsize == null
+       	or last_winsize.?.row != winsize.row
+        or last_winsize.?.col != winsize.col
+      ) {
+      	var message_buffer: [1024]u8 = undefined;
+       	const message = try std.fmt.bufPrint(
+        	&message_buffer,
+            "Rows: {d}, Cols: {d}",
+            .{ winsize.row, winsize.col }
+        );
 
-    	// std.Thread.sleep(1_000_000_000);
+        try clearPrompt(stdout);
+        try printCentered(stdout, message, winsize);
+
+        last_winsize = winsize;
+       	// std.Thread.sleep(1_000_000_000);
+      }
+
     }
 }
 
