@@ -7,12 +7,32 @@ pub fn main() !void {
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
+    overrideSignals();
+
     while (true) {
     	try displayAltBuffer(stdout);
     	std.Thread.sleep(1000000000);
      	try displayMainBuffer(stdout);
      	std.Thread.sleep(1000000000);
     }
+}
+
+fn handleSigInt(_: c_int) callconv(.c) void {
+	// TODO NOTHING (for now)
+    // std.log.debug("SIGNAL {d}", .{sig_num});
+}
+
+fn overrideSignals() void {
+	const action = std.posix.Sigaction{
+        .handler = .{ .handler = handleSigInt },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+
+    std.posix.sigaction(std.posix.SIG.INT, &action, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+    std.posix.sigaction(std.posix.SIG.USR1, &action, null);
+
 }
 
 fn clearPrompt(w: *std.io.Writer) !void {
