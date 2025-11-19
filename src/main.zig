@@ -8,40 +8,46 @@ pub fn main() !void {
     var stdout_writer = stdout_file.writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
+
     overrideSignals();
 
    	try displayAltBuffer(stdout);
+    defer displayMainBuffer(stdout) catch {};
 
-    var last_winsize: ?std.posix.winsize = undefined;
+    try hideCursor(stdout);
+    defer showCursor(stdout) catch {};
 
-    while (true) {
-     	const winsize = try getWinSize(&stdout_file);
+    // const stdin_file = std.fs.File.stdin();
+    // try disableRawMode(stdin_file.handle);
 
-      if (
-      	last_winsize == null
-       	or last_winsize.?.row != winsize.row
-        or last_winsize.?.col != winsize.col
-      ) {
-      	var message_buffer: [1024]u8 = undefined;
-       	const message = try std.fmt.bufPrint(
-        	&message_buffer,
-            "Rows: {d}, Cols: {d}",
-            .{ winsize.row, winsize.col }
-        );
+    var last_winsize: ?std.posix.winsize = null;
 
-        try clearPrompt(stdout);
-        try printCentered(stdout, message, winsize);
+    while (!should_exit.load(.seq_cst)) {
+    	const winsize = try getWinSize(&stdout_file);
 
-        last_winsize = winsize;
-       	// std.Thread.sleep(1_000_000_000);
-      }
+     	if ( last_winsize == null or last_winsize.?.row != winsize.row or last_winsize.?.col != winsize.col ) {
+      		var message_buffer: [1024]u8 = undefined;
+            const message = try std.fmt.bufPrint(&message_buffer, "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
 
+            // try clearPrompt(stdout);
+            try printCentered(stdout, message, winsize);
+
+            last_winsize = winsize;
+      	}
+
+       	std.Thread.sleep(1_000_000_000);
+        // try displayMainBuffer(stdout);
+        // std.Thread.sleep(1_000_000_000);
+        // try displayAltBuffer(stdout);
     }
 }
 
+var should_exit = std.atomic.Value(bool).init(false);
+
 fn handleSigInt(_: c_int) callconv(.c) void {
-	// TODO NOTHING (for now)
-    // std.log.debug("SIGNAL {d}", .{sig_num});
+	// signal that the main loop should exit
+	// then, anything that is defered can run and clean up
+	should_exit.store(true, .seq_cst);
 }
 
 fn overrideSignals() void {
@@ -56,10 +62,39 @@ fn overrideSignals() void {
     std.posix.sigaction(std.posix.SIG.USR1, &action, null);
 }
 
+fn disableRawMode(fd: std.posix.fd_t) !void {
+	const original_termios = try std.posix.tcgetattr(fd);
+
+	defer std.posix.tcsetattr(fd, .FLUSH, original_termios) catch {};
+
+	var termios = original_termios;
+
+	// TODO this does not work
+	// termios.lflag &= ~@as(std.posix.system.tc_lflag_t, std.c.tc_lflag_t.ECHO | std.c.ICANON | std.c.ISIG);
+
+	// TODO and this doesn't work either
+	termios.lflag.ECHO = false; // don't show typed chars
+	termios.lflag.ICANON = false; // disable line buffering
+	termios.lflag.ISIG = false; // disable Ctrl+C, Ctrl+Z
+	try std.posix.tcsetattr(fd, .FLUSH, termios);
+}
+
 fn clearPrompt(w: *std.io.Writer) !void {
 	const clear_sequence = "\x1b[2J";
     try w.print("{s}", .{ clear_sequence });
     try w.flush();
+}
+
+fn hideCursor(w: *std.io.Writer) !void {
+	const hide_cursor_sequence = "\x1B[?25l";
+	try w.print("{s}", .{ hide_cursor_sequence });
+	try w.flush();
+}
+
+fn showCursor(w: *std.io.Writer) !void {
+	const show_cursor_sequence = "\x1B[?25h";
+	try w.print("{s}", .{ show_cursor_sequence });
+	try w.flush();
 }
 
 fn displayAltBuffer(w: *std.io.Writer) !void {
