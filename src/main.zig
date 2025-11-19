@@ -31,7 +31,7 @@ pub fn main() !void {
        	try printCentered(stdout, time_msg, winsize);
 
      	if (last_winsize == null or last_winsize.?.row != winsize.row or last_winsize.?.col != winsize.col) {
-    		try clearPrompt(stdout);
+      		try clearPrompt(stdout);
 
       		// var message_buffer: [1024]u8 = undefined;
             const size_msg = try std.fmt.bufPrint(&message_buffer, "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
@@ -129,6 +129,7 @@ fn printCentered(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsi
 		(winsize.col - @as(u16, @intCast(buffer.len))) / 2
 		else 0;
 
+	try clearEntireLine(w, center_row);
 	try w.print("\x1B[{d};{d}H{s}", .{ center_row, center_col, buffer });
     try w.flush();
 }
@@ -136,7 +137,14 @@ fn printCentered(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsi
 fn printBottomLeft(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsize) !void {
 	const bottom_row = winsize.row;
 	const left_col = 1;
+	try clearEntireLine(w, winsize.row);
 	try w.print("\x1B[{d};{d}H{s}", .{ bottom_row, left_col, buffer });
+    try w.flush();
+}
+
+// Or clear the entire line regardless of cursor position:
+fn clearEntireLine(w: *std.io.Writer, row: u16) !void {
+    try w.print("\x1B[{d};1H\x1B[2K", .{ row });
     try w.flush();
 }
 
