@@ -12,14 +12,18 @@ pub fn main() !void {
 
    	try displayAltBuffer(stdout);
 
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
     while (true) {
      	const winsize = try getWinSize(&stdout_file);
-       	try stdout.print("Rows: {}, Cols: {}\n", .{ winsize.row, winsize.col });
-        try stdout.flush();
 
-    	// std.Thread.sleep(1000000000);
-     	// try displayMainBuffer(stdout);
-     	// std.Thread.sleep(1000000000);
+        try clearPrompt(stdout);
+        const text = try std.fmt.allocPrint(allocator, "Rows: {}, Cols: {}\n", .{ winsize.row, winsize.col });
+        try printCentered(stdout, text, winsize);
+        defer allocator.free(text);  // Don't forget to free
+
+    	// std.Thread.sleep(1_000_000_000);
     }
 }
 
@@ -67,4 +71,14 @@ fn getWinSize(f: *std.fs.File) !std.posix.winsize {
     }
 
     return winsize;
+}
+
+fn printCentered(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsize) !void {
+	const center_row = winsize.row / 2;
+	const center_col = if (winsize.col > buffer.len)
+		(winsize.col - @as(u16, @intCast(buffer.len))) / 2
+		else 0;
+
+	try w.print("\x1B[{d};{d}H{s}", .{ center_row, center_col, buffer });
+    try w.flush();
 }
