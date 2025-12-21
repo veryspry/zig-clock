@@ -1,6 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const zig_clock = @import("zig_clock");
+const testing = std.testing;
+const time_utils = @import("time_utils.zig");
+const ascii_art = @import("ascii_art.zig");
 
 pub fn main() !void {
     var stdout_buffer: [1024]u8 = undefined;
@@ -16,19 +18,36 @@ pub fn main() !void {
     try hideCursor(stdout);
     defer showCursor(stdout) catch {};
 
-    // const stdin_file = std.fs.File.stdin();
-    // try disableRawMode(stdin_file.handle);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
     var last_winsize: ?std.posix.winsize = null;
 
+    var time_msg_buf: [8][]const u8 = undefined; // TODO can this be reused on every loop iteration?
     while (!should_exit.load(.seq_cst)) {
         const winsize = try getWinSize(&stdout_file);
 
         var message_buffer: [1024]u8 = undefined;
 
-        const time = getCurrentTime();
-        const time_msg = try std.fmt.bufPrint(&message_buffer, "{d}:{d}:{d}", .{ time.hours, time.minutes, time.seconds });
-        try printCentered(stdout, time_msg, winsize);
+        const time_msg = try multiLineCharsToLines(
+            allocator,
+            ascii_art.ogre.getFromTime(
+                time_utils.getCurrentTime(),
+                &time_msg_buf,
+            ),
+        );
+        defer allocator.free(time_msg);
+        // try printCentered(stdout, time_msg, winsize);
+
+        try printMultiLineTimeCentered(
+            stdout,
+            time_msg,
+            winsize,
+        );
+
+        // const time = time_utils.getCurrentTime();
+        // const time_msg = try std.fmt.bufPrint(&message_buffer, "{d}:{d}:{d}", .{ time.hours, time.minutes, time.seconds });
+        // try printCentered(stdout, time_msg, winsize);
 
         if (last_winsize == null or last_winsize.?.row != winsize.row or last_winsize.?.col != winsize.col) {
             try clearPrompt(stdout);
@@ -123,6 +142,23 @@ fn getWinSize(f: *std.fs.File) !std.posix.winsize {
     return winsize;
 }
 
+fn printMultiLineTimeCentered(w: *std.io.Writer, lines: []const []const u8, winsize: std.posix.winsize) !void {
+    const center_row = winsize.row / 2;
+    const center_col = if (winsize.col > lines.len)
+        (winsize.col - @as(u16, @intCast(lines.len))) / 2
+    else
+        0;
+
+    var curr_row = @as(u16, @intCast((center_row / 2) - (lines.len / 2)));
+
+    for (lines) |line| {
+        try clearEntireLine(w, curr_row);
+        try w.print("\x1B[{d};{d}H{s}", .{ curr_row, center_col, line });
+        try w.flush();
+        curr_row += 1;
+    }
+}
+
 fn printCentered(w: *std.io.Writer, buffer: []const u8, winsize: std.posix.winsize) !void {
     const center_row = winsize.row / 2;
     const center_col = if (winsize.col > buffer.len)
@@ -149,26 +185,238 @@ fn clearEntireLine(w: *std.io.Writer, row: u16) !void {
     try w.flush();
 }
 
-const Time = struct {
-    seconds: u6,
-    minutes: u6,
-    hours: u5,
+const Dimensions = struct {
+    width: u16,
+    height: u16,
 };
 
-fn getCurrentTime() Time {
-    const timestamp = std.time.timestamp();
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(timestamp) };
-    const day_seconds = epoch_seconds.getDaySeconds();
-
-    const seconds = day_seconds.getSecondsIntoMinute();
-    const minutes = day_seconds.getMinutesIntoHour();
-    const hours = day_seconds.getHoursIntoDay();
-
-    const time: Time = .{
-        .seconds = seconds,
-        .minutes = minutes,
-        .hours = hours,
+// get the dimensions of one multiline ASCII number for example
+fn getBufDimensions(buffer: []const u8) Dimensions {
+    var dimensions: Dimensions = .{
+        .height = 0,
+        .width = 0,
     };
 
-    return time;
+    var lines = std.mem.splitScalar(u8, buffer, '\n');
+    while (lines.next()) |line| {
+        if (line.len > dimensions.width) {
+            dimensions.width = std.math.cast(u16, line.len) orelse dimensions.width;
+        }
+
+        dimensions.height = dimensions.height + 1;
+    }
+
+    return dimensions;
+}
+
+test "getBufDimensions" {
+    const buf1 =
+        \\ ___
+        \\/ _ \
+        \\| | |
+        \\| |_|
+        \\\___/
+    ;
+
+    const dimensions1 = getBufDimensions(buf1);
+
+    try std.testing.expectEqual(dimensions1.width, 5);
+    try std.testing.expectEqual(dimensions1.height, 5);
+
+    const buf2: []const u8 = "hey there test.";
+
+    const dimensions2 = getBufDimensions(buf2);
+
+    try std.testing.expectEqual(dimensions2.width, 15);
+    try std.testing.expectEqual(dimensions2.height, 1);
+}
+
+const MultiLineChar = struct {
+    height: u16,
+    width: u16,
+    lines: [][]const u8,
+
+    pub fn deinit(self: *MultiLineChar, allocator: std.mem.Allocator) void {
+        allocator.free(self.lines);
+    }
+};
+
+fn createMultiLineChar(allocator: std.mem.Allocator, buffer: []const u8) !MultiLineChar {
+    const dimensions = getBufDimensions(buffer);
+
+    var lines = try allocator.alloc([]const u8, dimensions.height);
+
+    var pieces = std.mem.splitScalar(u8, buffer, '\n');
+    var i: usize = 0;
+    while (pieces.next()) |line| {
+        lines[i] = line;
+        i += 1;
+    }
+
+    return MultiLineChar{ .height = dimensions.height, .width = dimensions.width, .lines = lines };
+}
+
+test "createMultiLineChar" {
+    const buf1 =
+        \\ ___
+        \\/ _ \
+        \\| | |
+        \\| |_|
+        \\\___/
+    ;
+
+    var char1 = try createMultiLineChar(testing.allocator, buf1);
+    defer char1.deinit(testing.allocator);
+
+    try std.testing.expectEqual(5, char1.width);
+    try std.testing.expectEqual(5, char1.height);
+    try std.testing.expectEqual(5, char1.lines.len);
+    try std.testing.expectEqualStrings(char1.lines[0], " ___");
+    try std.testing.expectEqualStrings(char1.lines[1], "/ _ \\");
+    try std.testing.expectEqualStrings(char1.lines[2], "| | |");
+    try std.testing.expectEqualStrings(char1.lines[3], "| |_|");
+    try std.testing.expectEqualStrings(char1.lines[4], "\\___/");
+}
+
+fn multiLineCharsToLines(allocator: std.mem.Allocator, bufs: [][]const u8) ![]const []const u8 {
+    const sep = ' ';
+
+    var multi_line_chars = try allocator.alloc(MultiLineChar, bufs.len);
+    defer allocator.free(multi_line_chars);
+    defer {
+        for (multi_line_chars) |*mlc| {
+            mlc.deinit(allocator);
+        }
+    }
+
+    var max_height: u16 = 0;
+    for (bufs, 0..) |buf, i| {
+        multi_line_chars[i] = try createMultiLineChar(allocator, buf);
+        max_height = @max(max_height, multi_line_chars[i].height);
+    }
+
+    var lines = try allocator.alloc(std.ArrayList(u8), max_height);
+    defer {
+        for (lines) |*l| l.deinit(allocator);
+        allocator.free(lines);
+    }
+
+    for (lines) |*l| {
+        l.* = std.ArrayList(u8).empty;
+    }
+
+    for (multi_line_chars, 0..) |mlc, i| {
+        // ensure that shorter things get aligned at the bottom of the final output slice
+        const start = max_height - mlc.height;
+
+        var pad_idx: usize = 0;
+        while (pad_idx < max_height - mlc.height) {
+            const old_len = lines[pad_idx].items.len;
+            const pad_len = old_len + mlc.width;
+            try lines[pad_idx].resize(allocator, pad_len + 1); // plus one for sep
+            @memset(lines[pad_idx].items[old_len..pad_len], ' ');
+            @memset(lines[pad_idx].items[pad_len..], sep);
+            pad_idx += 1;
+        }
+
+        for (mlc.lines, 0..) |line, j| {
+            const line_idx = j + start;
+
+            if (i != 0) {
+                // space between characters but skip adding it at the beginning
+                try lines[line_idx].append(allocator, sep);
+            }
+
+            try lines[line_idx].appendSlice(allocator, line);
+
+            const pad_len = mlc.width - line.len;
+            if (pad_len > 0 and i + 1 < multi_line_chars.len) {
+                // pad lines to keep spacing consistent unless on the last item
+                const old_len = lines[line_idx].items.len;
+                try lines[line_idx].resize(allocator, old_len + pad_len);
+                @memset(lines[line_idx].items[old_len..], ' ');
+            }
+        }
+    }
+
+    var result = try allocator.alloc([]const u8, max_height);
+    for (lines, 0..) |*line, curr| {
+        result[curr] = try line.toOwnedSlice(allocator);
+    }
+    return result;
+    // return lines;
+}
+
+fn combineMultiLineCharLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8 {
+    var total_len = lines.len - 1; // initialize size with the number of newlines needed
+
+    for (lines) |line| {
+        total_len += line.len;
+    }
+
+    var result = try allocator.alloc(u8, total_len);
+
+    var index: usize = 0;
+    for (lines, 0..) |line, j| {
+        std.mem.copyForwards(u8, result[index..], line);
+        index += line.len;
+
+        if (j + 1 < lines.len) {
+            result[index] = '\n';
+            index += 1;
+        }
+    }
+
+    return result;
+}
+
+test "combineMultiLineCharLines()" {
+    const buf1 =
+        \\ ___
+        \\/ _ \
+        \\| | |
+        \\| |_|
+        \\\___/
+    ;
+    const buf2 =
+        \\ _
+        \\/ |
+        \\| |
+        \\| |
+        \\|_|
+    ;
+    const buf3 =
+        \\ _ 
+        \\(_)
+        \\ _ 
+        \\(_)
+    ;
+
+    const expectedRes1 =
+        \\ ___   _
+        \\/ _ \ / |
+        \\| | | | |
+        \\| |_| | |
+        \\\___/ |_|
+    ;
+
+    const result1 = try combineMultiLineCharLines(
+        testing.allocator,
+        &[_][]const u8{ buf1, buf2 },
+    );
+
+    defer testing.allocator.free(result1);
+    try testing.expectEqualStrings(expectedRes1, result1);
+
+    const expectedRes2 =
+        \\ ___       _
+        \\/ _ \  _  / |
+        \\| | | (_) | |
+        \\| |_|  _  | |
+        \\\___/ (_) |_|
+    ;
+
+    const result2 = try combineMultiLineCharLines(testing.allocator, &[_][]const u8{ buf1, buf3, buf2 });
+    defer testing.allocator.free(result2);
+    try testing.expectEqualStrings(expectedRes2, result2);
 }

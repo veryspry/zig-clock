@@ -1,0 +1,119 @@
+const time_utils = @import("time_utils.zig");
+
+// get the number in the "10's" position
+// works on any u8 that is <= 99
+fn firstDigit(d: u8) u8 {
+    return (d - (d % 10)) / 10;
+}
+
+// get the number in the "1's" position
+fn lastDigit(d: u8) u8 {
+    return d % 10;
+}
+
+const ASCII_ART = struct {
+    const Self = @This();
+
+    symbols: [11][]const u8,
+
+    fn index(ch: u8) usize {
+        return switch (ch) {
+            '0'...'9' => ch - 48,
+            ':'...'@' => ch - 48,
+            else => @panic("Unsuppoted character"),
+        };
+    }
+
+    pub fn get(self: *const Self, ch: u8) []const u8 {
+        return self.symbols[Self.index(ch)];
+    }
+
+    pub fn getFromTime(
+        self: *const Self,
+        time: time_utils.Time,
+        out: *[8][]const u8,
+    ) [][]const u8 {
+        out.* = .{
+            self.get(firstDigit(time.hours) + '0'),
+            self.get(lastDigit(time.hours) + '0'),
+            self.get(@as(u8, ':')),
+            self.get(firstDigit(time.minutes) + '0'),
+            self.get(lastDigit(time.minutes) + '0'),
+            self.get(@as(u8, ':')),
+            self.get(firstDigit(time.seconds) + '0'),
+            self.get(lastDigit(time.seconds) + '0'),
+        };
+
+        return out[0..];
+    }
+};
+
+pub const ogre: ASCII_ART = .{
+    .symbols = .{
+        \\ ___
+        \\/ _ \
+        \\| | |
+        \\| |_|
+        \\\___/
+        ,
+        \\ _
+        \\/ |
+        \\| |
+        \\| |
+        \\|_|
+        ,
+        \\ ____
+        \\|___ \
+        \\__) |
+        \\/ __/
+        \\|_____|
+        ,
+        \\ _____
+        \\|___ /
+        \\|_ \
+        \\___) |
+        \\|____/
+        ,
+        \\ _  _
+        \\| || |
+        \\| || |_
+        \\|__   _|
+        \\  |_|
+        ,
+        \\ ____
+        \\| ___|
+        \\|___ \
+        \\ ___) |
+        \\|____/
+        ,
+        \\ __
+        \\/ /_
+        \\| '_ \
+        \\| (_) |
+        \\\___/
+        ,
+        \\ _____
+        \\|___  |
+        \\  / /
+        \\ / /
+        \\/_/
+        ,
+        \\ ___
+        \\( _ )
+        \\/ _ \
+        \\| (_) |
+        \\\___/
+        ,
+        \\ ___
+        \\/ _ \
+        \\| (_) |
+        \\\__, |
+        \\ /_/
+        ,
+        \\ _ 
+        \\(_)
+        \\ _ 
+        \\(_)
+        ,
+    },
+};
