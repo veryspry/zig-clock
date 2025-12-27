@@ -19,46 +19,37 @@ pub fn main() !void {
     defer showCursor(stdout) catch {};
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    // defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var last_winsize: ?std.posix.winsize = null;
+    var prev_frame: ?Frame = null;
+    var prev_winsize: ?std.posix.winsize = null;
 
-    var time_msg_buf: [8][]const u8 = undefined; // TODO can this be reused on every loop iteration?
     while (!should_exit.load(.seq_cst)) {
         const winsize = try getWinSize(&stdout_file);
 
-        var message_buffer: [1024]u8 = undefined;
-
-        const time_msg = try multiLineCharsToLines(
-            allocator,
-            ascii_art.ogre.getFromTime(
-                time_utils.getCurrentTime(),
-                &time_msg_buf,
-            ),
-        );
-        defer allocator.free(time_msg);
-        // try printCentered(stdout, time_msg, winsize);
-
-        try printMultiLineTimeCentered(
-            stdout,
-            time_msg,
-            winsize,
-        );
-
-        // const time = time_utils.getCurrentTime();
-        // const time_msg = try std.fmt.bufPrint(&message_buffer, "{d}:{d}:{d}", .{ time.hours, time.minutes, time.seconds });
-        // try printCentered(stdout, time_msg, winsize);
-
-        if (last_winsize == null or last_winsize.?.row != winsize.row or last_winsize.?.col != winsize.col) {
+        if (prev_winsize == null or prev_winsize.?.row != winsize.row or prev_winsize.?.col != winsize.col) {
+            // if winsize changes, than rerender from scratch
             try clearPrompt(stdout);
-
-            // var message_buffer: [1024]u8 = undefined;
-            const size_msg = try std.fmt.bufPrint(&message_buffer, "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
-
-            try printBottomLeft(stdout, size_msg, winsize);
-
-            last_winsize = winsize;
+            prev_winsize = winsize;
+            prev_frame = null;
         }
+
+        const frame = try initFrame(allocator, winsize);
+
+        for (frame.lines, 0..) |_, i| {
+            if (i == 0 or i == frame.row - 1) {
+                _ = try std.fmt.bufPrint(frame.lines[i], "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
+            }
+        }
+
+        try drawFrame(stdout, frame, prev_frame);
+
+        if (prev_frame) |f| {
+            f.deinit(allocator);
+        }
+
+        prev_frame = frame;
 
         std.Thread.sleep(10_000_000);
     }
@@ -101,9 +92,67 @@ fn disableRawMode(fd: std.posix.fd_t) !void {
     try std.posix.tcsetattr(fd, .FLUSH, termios);
 }
 
+const Frame = struct {
+    const Self = @This();
+
+    row: u16,
+    col: u16,
+    lines: [][]u8,
+
+    pub fn deinit(self: *const Self, allocator: std.mem.Allocator) void {
+        for (self.lines) |line| {
+            allocator.free(line);
+        }
+        allocator.free(self.lines);
+    }
+};
+
+fn initFrame(allocator: std.mem.Allocator, winsize: std.posix.winsize) !Frame {
+    const lines = try allocator.alloc([]u8, winsize.row);
+
+    for (lines) |*line| {
+        line.* = try allocator.alloc(u8, winsize.col);
+        @memset(line.*, ' ');
+    }
+
+    const frame: Frame = .{
+        .row = winsize.row,
+        .col = winsize.col,
+        .lines = lines,
+    };
+
+    return frame;
+}
+
+fn drawFrame(w: *std.io.Writer, curr_frame: Frame, prev_frame: ?Frame) !void {
+    // todo take prev_frame and do diffing
+    for (curr_frame.lines, 0..) |line, i| {
+        var changed = true;
+
+        if (prev_frame) |pf| {
+            changed = !std.mem.eql(u8, pf.lines[i], line);
+        }
+
+        if (changed) {
+            try moveCursor(w, i + 1, 1);
+            try clearLine(w);
+            try w.writeAll(line);
+            try w.flush();
+            // reposition cursor to reset the auto wrap flag
+            try moveCursor(w, 1, 1);
+        }
+    }
+}
+
+fn clearLine(writer: anytype) !void {
+    try writer.writeAll("\x1b[2K");
+}
+
 fn clearPrompt(w: *std.io.Writer) !void {
-    const clear_sequence = "\x1b[2J";
-    try w.print("{s}", .{clear_sequence});
+    // const clear_sequence = "\x1b[2J";
+    // try w.print("{s}", .{clear_sequence});
+    // clear screen and put cursor at 1,1
+    try w.writeAll("\x1b[2J\x1b[H");
     try w.flush();
 }
 
@@ -117,6 +166,11 @@ fn showCursor(w: *std.io.Writer) !void {
     const show_cursor_sequence = "\x1B[?25h";
     try w.print("{s}", .{show_cursor_sequence});
     try w.flush();
+}
+
+// Moves the cursor position. Note that row and col are 1 index NOT 0 indexed
+fn moveCursor(writer: anytype, row: usize, col: usize) !void {
+    try writer.print("\x1b[{d};{d}H", .{ row, col });
 }
 
 fn displayAltBuffer(w: *std.io.Writer) !void {
