@@ -19,12 +19,13 @@ pub fn main() !void {
     defer showCursor(stdout) catch {};
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    // defer _ = gpa.deinit();
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     var prev_frame: ?Frame = null;
     var prev_winsize: ?std.posix.winsize = null;
 
+    var time_chars_buf: [8][]const u8 = undefined;
     while (!should_exit.load(.seq_cst)) {
         const winsize = try getWinSize(&stdout_file);
 
@@ -41,6 +42,24 @@ pub fn main() !void {
             if (i == 0 or i == frame.row - 1) {
                 _ = try std.fmt.bufPrint(frame.lines[i], "Rows: {d}, Cols: {d}", .{ winsize.row, winsize.col });
             }
+        }
+
+        const ascii_chars = ascii_art.ogre.getFromTime(
+            time_utils.getCurrentTime(),
+            &time_chars_buf,
+        );
+
+        const start_line = 4;
+        var curr_pos: usize = 0;
+
+        for (ascii_chars) |char| {
+            var mlc = try createMultiLineChar(allocator, char);
+            defer mlc.deinit(allocator);
+            for (mlc.lines, 0..) |line, i| {
+                _ = try std.fmt.bufPrint(frame.lines[start_line + i][curr_pos..], "{s}", .{line});
+            }
+
+            curr_pos += mlc.width + 1;
         }
 
         try drawFrame(stdout, frame, prev_frame);
@@ -291,6 +310,9 @@ const MultiLineChar = struct {
     lines: [][]const u8,
 
     pub fn deinit(self: *MultiLineChar, allocator: std.mem.Allocator) void {
+        for (self.lines) |line| {
+            allocator.free(line);
+        }
         allocator.free(self.lines);
     }
 };
@@ -301,8 +323,22 @@ fn createMultiLineChar(allocator: std.mem.Allocator, buffer: []const u8) !MultiL
     var lines = try allocator.alloc([]const u8, dimensions.height);
 
     var pieces = std.mem.splitScalar(u8, buffer, '\n');
-    var i: usize = 0;
+
+    var max_width: usize = 0;
     while (pieces.next()) |line| {
+        max_width = @max(max_width, line.len);
+    }
+
+    pieces.reset();
+
+    var i: usize = 0;
+    while (pieces.next()) |piece| {
+        const piece_len = piece.len;
+        const pad_len = @max(0, max_width - piece_len);
+        const line = try allocator.alloc(u8, piece_len + pad_len);
+        @memcpy(line[0..piece_len], piece);
+        @memset(line[piece_len..], ' ');
+
         lines[i] = line;
         i += 1;
     }
@@ -332,15 +368,15 @@ test "createMultiLineChar" {
     try std.testing.expectEqualStrings(char1.lines[4], "\\___/");
 }
 
-fn multiLineCharsToLines(allocator: std.mem.Allocator, bufs: [][]const u8) ![]const []const u8 {
+fn multiLineCharsToLines(allocator: std.mem.Allocator, bufs: []const []const u8) ![]const []const u8 {
     const sep = ' ';
 
     var multi_line_chars = try allocator.alloc(MultiLineChar, bufs.len);
-    defer allocator.free(multi_line_chars);
     defer {
         for (multi_line_chars) |*mlc| {
             mlc.deinit(allocator);
         }
+        allocator.free(multi_line_chars);
     }
 
     var max_height: u16 = 0;
@@ -398,79 +434,54 @@ fn multiLineCharsToLines(allocator: std.mem.Allocator, bufs: [][]const u8) ![]co
         result[curr] = try line.toOwnedSlice(allocator);
     }
     return result;
-    // return lines;
 }
 
-fn combineMultiLineCharLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8 {
-    var total_len = lines.len - 1; // initialize size with the number of newlines needed
-
-    for (lines) |line| {
-        total_len += line.len;
-    }
-
-    var result = try allocator.alloc(u8, total_len);
-
-    var index: usize = 0;
-    for (lines, 0..) |line, j| {
-        std.mem.copyForwards(u8, result[index..], line);
-        index += line.len;
-
-        if (j + 1 < lines.len) {
-            result[index] = '\n';
-            index += 1;
-        }
-    }
-
-    return result;
-}
-
-test "combineMultiLineCharLines()" {
-    const buf1 =
+test "multiLineCharsToLines()" {
+    const zero =
         \\ ___
         \\/ _ \
         \\| | |
         \\| |_|
         \\\___/
     ;
-    const buf2 =
+
+    const one =
         \\ _
         \\/ |
         \\| |
         \\| |
         \\|_|
     ;
-    const buf3 =
-        \\ _ 
+
+    const colon =
+        \\ _
         \\(_)
-        \\ _ 
+        \\ _
         \\(_)
     ;
 
-    const expectedRes1 =
-        \\ ___   _
-        \\/ _ \ / |
-        \\| | | | |
-        \\| |_| | |
-        \\\___/ |_|
-    ;
+    const expectedRes1: []const []const u8 = &[_][]const u8{
+        " ___       _",
+        "/ _ \\  _  / |",
+        "| | | (_) | |",
+        "| |_|  _  | |",
+        "\\___/ (_) |_|",
+    };
 
-    const result1 = try combineMultiLineCharLines(
+    const res1 = try multiLineCharsToLines(
         testing.allocator,
-        &[_][]const u8{ buf1, buf2 },
+        &[_][]const u8{ zero, colon, one },
     );
 
-    defer testing.allocator.free(result1);
-    try testing.expectEqualStrings(expectedRes1, result1);
+    defer {
+        for (res1) |line| {
+            testing.allocator.free(line);
+        }
+        testing.allocator.free(res1);
+    }
 
-    const expectedRes2 =
-        \\ ___       _
-        \\/ _ \  _  / |
-        \\| | | (_) | |
-        \\| |_|  _  | |
-        \\\___/ (_) |_|
-    ;
-
-    const result2 = try combineMultiLineCharLines(testing.allocator, &[_][]const u8{ buf1, buf3, buf2 });
-    defer testing.allocator.free(result2);
-    try testing.expectEqualStrings(expectedRes2, result2);
+    try testing.expect(expectedRes1.len == res1.len);
+    for (expectedRes1, 0..) |line, i| {
+        try testing.expectEqualStrings(line, res1[i]);
+    }
 }
