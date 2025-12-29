@@ -33,6 +33,9 @@ pub fn main() !void {
             // if winsize changes, than rerender from scratch
             try clearPrompt(stdout);
             prev_winsize = winsize;
+            if (prev_frame) |f| {
+                f.deinit(allocator);
+            }
             prev_frame = null;
         }
 
@@ -85,6 +88,9 @@ pub fn main() !void {
         prev_frame = frame;
 
         std.Thread.sleep(10_000_000);
+    }
+    if (prev_frame) |f| {
+        f.deinit(allocator);
     }
 }
 
