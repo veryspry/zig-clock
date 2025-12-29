@@ -49,17 +49,31 @@ pub fn main() !void {
             &time_chars_buf,
         );
 
-        const start_line = 4;
-        var curr_pos: usize = 0;
-
-        for (ascii_chars) |char| {
-            var mlc = try createMultiLineChar(allocator, char);
-            defer mlc.deinit(allocator);
-            for (mlc.lines, 0..) |line, i| {
-                _ = try std.fmt.bufPrint(frame.lines[start_line + i][curr_pos..], "{s}", .{line});
+        var mlcs = try allocator.alloc(MultiLineChar, ascii_chars.len);
+        defer {
+            for (mlcs) |*mlc| {
+                mlc.deinit(allocator);
             }
+            allocator.free(mlcs);
+        }
 
-            curr_pos += mlc.width + 1;
+        var time_cols: u16 = 0;
+        var time_rows: u16 = 0;
+        for (ascii_chars, 0..) |c, i| {
+            mlcs[i] = try createMultiLineChar(allocator, c);
+
+            time_cols += mlcs[i].width;
+            time_rows = @max(time_rows, mlcs[i].height);
+        }
+
+        const start_row = (winsize.row / 2) - (time_rows / 2);
+        var curr_col: usize = (winsize.col / 2) - (time_cols / 2);
+
+        for (mlcs) |mlc| {
+            for (mlc.lines, 0..) |line, i| {
+                _ = try std.fmt.bufPrint(frame.lines[start_row + i][curr_col..], "{s}", .{line});
+            }
+            curr_col += mlc.width + 1; // plus 1 for whitespace
         }
 
         try drawFrame(stdout, frame, prev_frame);
